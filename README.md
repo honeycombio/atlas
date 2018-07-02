@@ -1,0 +1,41 @@
+# MongoDB Atlas Integration for Honeycomb
+
+## Installation
+
+```
+go get github.com/honeycombio/atlas
+```
+
+## Usage
+
+```bash
+# Your Atlas API Key, configured at:
+# https://cloud.mongodb.com/v2#/account/publicApi
+API_KEY=abcd1234-ab12-ab12-1234567890ab
+# Your Atlas Username
+USERNAME=myuser@example.com
+# This is the Atlas Group ID/Project ID
+# You can find this in your Atlass "Project Settings" page
+GROUP_ID=abc1def2abc1def2ab9999
+# Your Honeycomb Write Key
+WRITE_KEY=abcdef1234567890999999999
+# Target Honeycomb Dataset
+DATASET=atlas-logs
+atlas \
+  --api_key=${API_KEY} \
+  --username=${USERNAME} \
+  --group_id=${GROUP_ID} \
+  --cluster=Cluster0 \
+  --writekey=${WRITE_KEY} \
+  --dataset=${DATASET}
+```
+
+You can specify more clusters by providing the ``--cluster`` parameter multiple times.
+
+### Kubernetes
+
+Atlas is a good candidate for running inside k8s. You can modify the included spec file (`kubernetes/atlas.example.yml`) with the required arguments (USERNAME, API_KEY, WRITE_KEY, etc) and apply with `kubectl apply`:
+
+```
+kubectl apply -f kubernetes/atlas.example.yml
+```

@@ -1,0 +1,81 @@
+---
+apiVersion: apps/v1beta2 # for versions before 1.9.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: honeycomb-atlas
+spec:
+  selector:
+    matchLabels:
+      app: atlas
+      env: production
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: atlas
+        env: production
+    spec:
+      containers:
+      - name: atlas
+        image: honeycombio/atlas:latest
+        command: ["atlas"]
+        args:
+          - "--writekey"
+          - "$(WRITE_KEY)"
+          - "--dataset"
+          - "$(DATASET)"
+          - "--username"
+          - "$(USERNAME)"
+          - "--api_key"
+          - "$(API_KEY)"
+          - "--group_id"
+          - "$(GROUP_ID)"
+          - "--cluster"
+          - "$(CLUSTER)"
+        resources:
+          # you may need to increase these values based on the number of
+          # clusters or your overall log volume
+          requests:
+            cpu: 1000m
+            memory: 100Mi
+        env:
+        - name: WRITE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: honeycomb-writekey
+              key: key
+        - name: DATASET
+          value: atlas-logs
+        - name: USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: atlas-credentals
+              key: username
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: atlas-credentals
+              key: apikey
+        - name: CLUSTER
+          value: Cluster0
+        - name: GROUP_ID
+          value: abc1def2abc1def2ab9999
+---
+# change the secrets below to your actual secrets
+apiVersion: v1
+kind: Secret
+metadata:
+  name: honeycomb-writekey
+type: Opaque
+data:
+  key: abcdef1234567890999999999
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: atlas-credentials
+type: Opaque
+data:
+  username: myuser@example.com
+  apikey: abcd1234-ab12-ab12-1234567890ab
+...
