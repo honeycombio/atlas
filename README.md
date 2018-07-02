@@ -8,6 +8,17 @@ go get github.com/honeycombio/atlas
 
 ## Usage
 
+### Preparing MongoDB logging
+
+Atlas does not currently allow you to set the log verbosity level. To enable logging, you will need to configure profiling on each DB that you are interested in collecting from. To do this, run the following in your Mongo shell:
+
+```
+dbnames = db.getMongo().getDBNames()
+for (var k in dbnames) { adb = db.getMongo().getDB(dbnames[k]); adb.setProfilingLevel(2, -1); }
+```
+
+### Running the Atlas integration
+
 ```bash
 # Your Atlas API Key, configured at:
 # https://cloud.mongodb.com/v2#/account/publicApi
