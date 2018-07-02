@@ -96,7 +96,8 @@ func (a *app) Run() {
 	a.state.event = make(chan event.Event)
 	a.state.parser = &mongodb.Parser{}
 	a.state.parser.Init(&mongodb.Options{
-		NumParsers: numParsers,
+		NumParsers:  numParsers,
+		LogPartials: true,
 	})
 	go a.state.parser.ProcessLines(a.state.lines, a.state.event, nil)
 	go sendEvents(a.state.event)
@@ -263,6 +264,7 @@ func (c *collector) pullLog() {
 
 	reader := bufio.NewReader(gzipReader)
 	for {
+
 		line, err := reader.ReadString('\n')
 		if err == io.EOF {
 			break
@@ -291,7 +293,7 @@ func sendEvents(events <-chan event.Event) {
 	for {
 		select {
 		case ev := <-events:
-			logrus.WithFields(ev.Data).Info("Got Event")
+			logrus.WithFields(ev.Data).Debug("Got Event")
 			e := libhoney.NewEvent()
 			e.Add(ev.Data)
 			e.Timestamp = ev.Timestamp
