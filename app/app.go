@@ -29,14 +29,15 @@ const (
 )
 
 type Options struct {
-	Username   string   `long:"username" description:"Your Atlas Username" required:"true"`
-	APIKey     string   `long:"api_key" description:"Your Atlas API Key" required:"true"`
-	GroupID    string   `long:"group_id" description:"Your Atlas Group ID" required:"true"`
-	Clusters   []string `long:"cluster" description:"Cluster to gather logs from. Maybe specified multiple times." required:"true"`
-	APIHost    string   `long:"api_host" description:"Hostname for the Honeycomb API server" default:"https://api.honeycomb.io/"`
-	WriteKey   string   `long:"writekey" description:"Your Honeycomb write key." required:"true"`
-	Dataset    string   `long:"dataset" description:"Target Honeycomb dataset" default:"mongodb-atlas-logs"`
-	NumParsers int      `long:"num_parsers" description:"Number of parsers to use in parallel to process log lines" default:"4"`
+	Username        string        `long:"username" description:"Your Atlas Username" required:"true"`
+	APIKey          string        `long:"api_key" description:"Your Atlas API Key" required:"true"`
+	GroupID         string        `long:"group_id" description:"Your Atlas Group ID" required:"true"`
+	Clusters        []string      `long:"cluster" description:"Cluster to gather logs from. Maybe specified multiple times." required:"true"`
+	APIHost         string        `long:"api_host" description:"Hostname for the Honeycomb API server" default:"https://api.honeycomb.io/"`
+	WriteKey        string        `long:"writekey" description:"Your Honeycomb write key." required:"true"`
+	Dataset         string        `long:"dataset" description:"Target Honeycomb dataset" default:"mongodb-atlas-logs"`
+	NumParsers      int           `long:"num_parsers" description:"Number of parsers to use in parallel to process log lines" default:"4"`
+	PollingInterval time.Duration `long:"polling_interval" description:"Time between each request to the Atlas API for more logs." default:"5m"`
 }
 
 type app struct {
@@ -138,7 +139,8 @@ func (a *app) ensureCollectors() {
 			}
 
 			collector := newCollector(a.options.GroupID, cluster.Name, node,
-				"mongodb.gz", a.options.Username, a.options.APIKey, a.state.lines)
+				"mongodb.gz", a.options.Username, a.options.APIKey, a.state.lines,
+				a.options.PollingInterval)
 			a.state.collectors[node] = collector
 			collector.Start()
 		}
@@ -172,9 +174,10 @@ type collector struct {
 	logs            chan string
 	reqSem          *semaphore.Weighted
 	logSem          *semaphore.Weighted
+	interval        time.Duration
 }
 
-func newCollector(groupID, clusterName, hostName, logName, username, apikey string, lines chan string) *collector {
+func newCollector(groupID, clusterName, hostName, logName, username, apikey string, lines chan string, interval time.Duration) *collector {
 	return &collector{
 		groupID:         groupID,
 		clusterName:     clusterName,
@@ -187,6 +190,7 @@ func newCollector(groupID, clusterName, hostName, logName, username, apikey stri
 		logs:            make(chan string),
 		reqSem:          semaphore.NewWeighted(maxConcurrency),
 		logSem:          semaphore.NewWeighted(maxConcurrency),
+		interval:        interval,
 	}
 }
 
@@ -202,7 +206,7 @@ func (c *collector) execute() {
 	go c.pullLog()
 	go c.readLog()
 
-	for ; ; time.Sleep(time.Minute) {
+	for ; ; time.Sleep(c.interval) {
 		if c.stop {
 			close(c.logs)
 			close(c.pendingRequests)
@@ -214,7 +218,7 @@ func (c *collector) execute() {
 		// enqueue the request to be fulfilled by `pullLog`
 		c.pendingRequests <- &logRequest{
 			endDate:   now.Unix(),
-			startDate: now.Add(time.Minute * time.Duration(-1)).Unix(),
+			startDate: now.Add(c.interval * time.Duration(-1)).Unix(),
 		}
 	}
 }
