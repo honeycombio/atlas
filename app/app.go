@@ -282,6 +282,7 @@ func (c *collector) pullLog() {
 					}).Error("bad status code for request")
 					return
 				}
+				defer resp.Body.Close()
 
 				outFile, err := ioutil.TempFile(os.TempDir(), prefix)
 				if err != nil {
