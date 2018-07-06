@@ -17,6 +17,10 @@ dbnames = db.getMongo().getDBNames()
 for (var k in dbnames) { adb = db.getMongo().getDB(dbnames[k]); adb.setProfilingLevel(2, -1); }
 ```
 
+### Atlas Permissions
+
+Your user will need ownership permissions on the cluster to pull the logs. See [Atlas Logs API](https://docs.atlas.mongodb.com/reference/api/logs/) for more information.
+
 ### Running the Atlas integration
 
 ```bash

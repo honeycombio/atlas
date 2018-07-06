@@ -3,11 +3,15 @@ package app
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Sirupsen/logrus"
@@ -16,21 +20,23 @@ import (
 	"github.com/honeycombio/honeytail/parsers/mongodb"
 	libhoney "github.com/honeycombio/libhoney-go"
 	dac "github.com/xinsnake/go-http-digest-auth-client"
+	"golang.org/x/sync/semaphore"
 )
 
 const (
 	refreshInterval = time.Second * 60
-	numParsers      = 4
+	maxConcurrency  = 10
 )
 
 type Options struct {
-	Username string   `long:"username" description:"Your Atlas Username" required:"true"`
-	APIKey   string   `long:"api_key" description:"Your Atlas API Key" required:"true"`
-	GroupID  string   `long:"group_id" description:"Your Atlas Group ID" required:"true"`
-	Clusters []string `long:"cluster" description:"Cluster to gather logs from. Maybe specified multiple times." required:"true"`
-	APIHost  string   `long:"api_host" description:"Hostname for the Honeycomb API server" default:"https://api.honeycomb.io/"`
-	WriteKey string   `long:"writekey" description:"Your Honeycomb write key." required:"true"`
-	Dataset  string   `long:"dataset" description:"Target Honeycomb dataset" default:"mongodb-atlas-logs"`
+	Username   string   `long:"username" description:"Your Atlas Username" required:"true"`
+	APIKey     string   `long:"api_key" description:"Your Atlas API Key" required:"true"`
+	GroupID    string   `long:"group_id" description:"Your Atlas Group ID" required:"true"`
+	Clusters   []string `long:"cluster" description:"Cluster to gather logs from. Maybe specified multiple times." required:"true"`
+	APIHost    string   `long:"api_host" description:"Hostname for the Honeycomb API server" default:"https://api.honeycomb.io/"`
+	WriteKey   string   `long:"writekey" description:"Your Honeycomb write key." required:"true"`
+	Dataset    string   `long:"dataset" description:"Target Honeycomb dataset" default:"mongodb-atlas-logs"`
+	NumParsers int      `long:"num_parsers" description:"Number of parsers to use in parallel to process log lines" default:"4"`
 }
 
 type app struct {
@@ -96,7 +102,7 @@ func (a *app) Run() {
 	a.state.event = make(chan event.Event)
 	a.state.parser = &mongodb.Parser{}
 	a.state.parser.Init(&mongodb.Options{
-		NumParsers:  numParsers,
+		NumParsers:  a.options.NumParsers,
 		LogPartials: true,
 	})
 	go a.state.parser.ProcessLines(a.state.lines, a.state.event, nil)
@@ -147,28 +153,40 @@ func (a *app) ensureCollectors() {
 	}
 }
 
+type logRequest struct {
+	startDate int64
+	endDate   int64
+}
+
 type collector struct {
-	groupID     string
-	clusterName string
-	hostName    string
-	logName     string
-	username    string
-	apikey      string
-	lines       chan string
-	lastRead    time.Time
-	errorCount  int
-	stop        bool
+	groupID         string
+	clusterName     string
+	hostName        string
+	logName         string
+	username        string
+	apikey          string
+	lines           chan string
+	errorCount      int
+	stop            bool
+	pendingRequests chan *logRequest
+	logs            chan string
+	reqSem          *semaphore.Weighted
+	logSem          *semaphore.Weighted
 }
 
 func newCollector(groupID, clusterName, hostName, logName, username, apikey string, lines chan string) *collector {
 	return &collector{
-		groupID:     groupID,
-		clusterName: clusterName,
-		hostName:    hostName,
-		logName:     logName,
-		username:    username,
-		apikey:      apikey,
-		lines:       lines,
+		groupID:         groupID,
+		clusterName:     clusterName,
+		hostName:        hostName,
+		logName:         logName,
+		username:        username,
+		apikey:          apikey,
+		lines:           lines,
+		pendingRequests: make(chan *logRequest),
+		logs:            make(chan string),
+		reqSem:          semaphore.NewWeighted(maxConcurrency),
+		logSem:          semaphore.NewWeighted(maxConcurrency),
 	}
 }
 
@@ -181,99 +199,200 @@ func (c *collector) Start() {
 }
 
 func (c *collector) execute() {
-	sleepDuration := refreshInterval
+	go c.pullLog()
+	go c.readLog()
 
-	for ; ; time.Sleep(sleepDuration) {
+	for ; ; time.Sleep(time.Minute) {
 		if c.stop {
+			close(c.logs)
+			close(c.pendingRequests)
 			return
 		}
-		timeStart := time.Now()
-		c.pullLog()
 
-		// target sleep interval is refreshInterval, but we update it to
-		// subtract the time we spent doing work
-		sleepDuration = refreshInterval - time.Since(timeStart)
+		// target read time is approximately every minute
+		now := time.Now()
+		// enqueue the request to be fulfilled by `pullLog`
+		c.pendingRequests <- &logRequest{
+			endDate:   now.Unix(),
+			startDate: now.Add(time.Minute * time.Duration(-1)).Unix(),
+		}
 	}
 }
 
 func (c *collector) pullLog() {
-	var startDate, endDate int64
-	// if this is the first time we've read, set the read window to the last 1 minute
-	if c.lastRead.IsZero() {
-		c.lastRead = time.Now()
-		endDate = c.lastRead.Unix()
-		startDate = c.lastRead.Add(time.Duration(-1) * time.Minute).Unix()
-	} else {
-		// otherwise, read from the last read time until now
-		startDate = c.lastRead.Unix()
-		c.lastRead = time.Now()
-		endDate = c.lastRead.Unix()
-	}
-
-	t := dac.NewTransport(c.username, c.apikey)
-	httpClient := &http.Client{Transport: &t}
-
-	url := fmt.Sprintf(
-		"https://cloud.mongodb.com/api/atlas/v1.0/groups/%s/clusters/%s/logs/%s?startDate=%d&endDate=%d",
-		c.groupID, c.hostName, c.logName, startDate, endDate)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"cluster":  c.clusterName,
-			"hostname": c.hostName,
-			"logName":  c.logName,
-		}).Error("failed to build API request for logs")
-		return
-	}
-
-	req.Header.Add("Accept-Encoding", "gzip")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"cluster":   c.clusterName,
-			"hostname":  c.hostName,
-			"logName":   c.logName,
-			"startDate": startDate,
-			"endDate":   endDate,
-		}).Error("failed to read log for host")
-		return
-	}
-
-	gzipReader, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		if err == io.EOF {
-			logrus.WithError(err).WithFields(logrus.Fields{
-				"cluster":   c.clusterName,
-				"hostname":  c.hostName,
-				"logName":   c.logName,
-				"startDate": startDate,
-				"endDate":   endDate,
-			}).Info("got EOF, possibly no log data for this time window")
-			return
-		}
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"cluster":   c.clusterName,
-			"hostname":  c.hostName,
-			"logName":   c.logName,
-			"startDate": startDate,
-			"endDate":   endDate,
-		}).Error("failed to build gzip reader")
-		return
-	}
-	defer gzipReader.Close()
-
-	reader := bufio.NewReader(gzipReader)
+	ctx := context.TODO()
+	prefix := fmt.Sprintf("%s-%s", c.clusterName, c.hostName)
 	for {
+		select {
+		case r := <-c.pendingRequests:
+			if err := c.reqSem.Acquire(ctx, 1); err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"cluster":  c.clusterName,
+					"hostname": c.hostName,
+					"logName":  c.logName,
+				}).Error("pullLog got unexpected error while acquiring semaphore")
+				continue
+			}
+			// after acquiring a semaphore, dispatch a routine to pull the log
+			// and stage it as a local file. This model allows us to pull
+			// multiple files, in case we're behind, while not creating too many
+			// go routines
+			go func() {
+				defer c.reqSem.Release(1)
+				t := dac.NewTransport(c.username, c.apikey)
+				httpClient := &http.Client{Transport: &t}
 
-		line, err := reader.ReadString('\n')
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			logrus.WithError(err).Warn("failed to read line")
-			continue
+				url := fmt.Sprintf(
+					"https://cloud.mongodb.com/api/atlas/v1.0/groups/%s/clusters/%s/logs/%s?startDate=%d&endDate=%d",
+					c.groupID, c.hostName, c.logName, r.startDate, r.endDate)
+				req, err := http.NewRequest("GET", url, nil)
+				if err != nil {
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":  c.clusterName,
+						"hostname": c.hostName,
+						"logName":  c.logName,
+					}).Error("failed to build API request for logs")
+					return
+				}
+
+				req.Header.Add("Accept-Encoding", "gzip")
+				resp, err := httpClient.Do(req)
+				if err != nil {
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":   c.clusterName,
+						"hostname":  c.hostName,
+						"logName":   c.logName,
+						"startDate": r.startDate,
+						"endDate":   r.endDate,
+					}).Error("failed to request log for host")
+					return
+				}
+				if resp.StatusCode != 200 {
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":   c.clusterName,
+						"hostname":  c.hostName,
+						"logName":   c.logName,
+						"startDate": r.startDate,
+						"endDate":   r.endDate,
+						"status":    resp.StatusCode,
+					}).Error("bad status code for request")
+					return
+				}
+
+				outFile, err := ioutil.TempFile(os.TempDir(), prefix)
+				if err != nil {
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":   c.clusterName,
+						"hostname":  c.hostName,
+						"logName":   c.logName,
+						"startDate": r.startDate,
+						"endDate":   r.endDate,
+					}).Error("unable to open log file for writing")
+					return
+				}
+				defer outFile.Close()
+
+				written, err := io.Copy(outFile, resp.Body)
+				if err != nil {
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":   c.clusterName,
+						"hostname":  c.hostName,
+						"logName":   c.logName,
+						"startDate": r.startDate,
+						"endDate":   r.endDate,
+						"file":      outFile.Name(),
+					}).Error("unable to write log file")
+					syscall.Unlink(outFile.Name())
+					return
+				}
+
+				logrus.WithFields(logrus.Fields{
+					"cluster":      c.clusterName,
+					"hostname":     c.hostName,
+					"logName":      c.logName,
+					"startDate":    r.startDate,
+					"endDate":      r.endDate,
+					"file":         outFile.Name(),
+					"bytesWritten": written,
+				}).Info("staged log file for ingestion")
+
+				c.logs <- outFile.Name()
+			}()
 		}
+	}
+}
 
-		c.lines <- line
+func (c *collector) readLog() {
+	ctx := context.TODO()
+
+	for {
+		select {
+		case fileName := <-c.logs:
+			if err := c.logSem.Acquire(ctx, 1); err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"cluster":  c.clusterName,
+					"hostname": c.hostName,
+					"logName":  c.logName,
+				}).Error("readLog got unexpected error while acquiring semaphore")
+				continue
+			}
+			// after acquiring a semaphore, dispatch a routine to read the log
+			// and feed it line-by-line to the parser. This model allows us to
+			// parallelize some I/O in case we get behind, while not creating
+			// too many go routines. Ultimately we will block on the parser's
+			// throughput
+			go func() {
+				defer c.logSem.Release(1)
+				defer syscall.Unlink(fileName)
+				file, err := os.Open(fileName)
+				if err != nil {
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":  c.clusterName,
+						"hostname": c.hostName,
+						"logName":  c.logName,
+						"fileName": fileName,
+					}).Error("unable to open log file for writing")
+					syscall.Unlink(fileName)
+					return
+				}
+
+				// file contents are gzipped
+				gzipReader, err := gzip.NewReader(file)
+				if err != nil {
+					if err == io.EOF {
+						logrus.WithError(err).WithFields(logrus.Fields{
+							"cluster":  c.clusterName,
+							"hostname": c.hostName,
+							"logName":  c.logName,
+							"fileName": fileName,
+						}).Info("got EOF, possibly no log data for this time window")
+						return
+					}
+					logrus.WithError(err).WithFields(logrus.Fields{
+						"cluster":  c.clusterName,
+						"hostname": c.hostName,
+						"logName":  c.logName,
+						"fileName": fileName,
+					}).Error("failed to build gzip reader")
+					return
+				}
+				defer gzipReader.Close()
+
+				reader := bufio.NewReader(gzipReader)
+				for {
+
+					line, err := reader.ReadString('\n')
+					if err == io.EOF {
+						break
+					} else if err != nil {
+						logrus.WithError(err).Warn("failed to read line")
+						continue
+					}
+
+					c.lines <- line
+				}
+			}()
+		}
 	}
 }
 
