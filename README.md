@@ -1,5 +1,7 @@
 # MongoDB Atlas Integration for Honeycomb
 
+[![OSS Lifecycle](https://img.shields.io/osslifecycle/honeycombio/atlas)](https://github.com/honeycombio/home/blob/main/honeycomb-oss-lifecycle-and-practices.md)
+
 ## Installation
 
 ```
@@ -36,7 +38,6 @@ GROUP_ID=abc1def2abc1def2ab9999
 WRITE_KEY=abcdef1234567890999999999
 # Target Honeycomb Dataset
 
-[![OSS Lifecycle](https://img.shields.io/osslifecycle/honeycombio/REPO)](https://github.com/honeycombio/home/blob/main/honeycomb-oss-lifecycle-and-practices.md)
 DATASET=atlas-logs
 atlas \
   --api_key=${API_KEY} \
