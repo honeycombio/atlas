@@ -1,5 +1,7 @@
 # MongoDB Atlas Integration for Honeycomb
 
+[![OSS Lifecycle](https://img.shields.io/osslifecycle/honeycombio/atlas)](https://github.com/honeycombio/home/blob/main/honeycomb-oss-lifecycle-and-practices.md)
+
 ## Installation
 
 ```
