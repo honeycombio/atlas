@@ -37,7 +37,6 @@ GROUP_ID=abc1def2abc1def2ab9999
 # Your Honeycomb Write Key
 WRITE_KEY=abcdef1234567890999999999
 # Target Honeycomb Dataset
-
 DATASET=atlas-logs
 atlas \
   --api_key=${API_KEY} \
