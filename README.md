@@ -6,6 +6,8 @@
 
 We recommend using [honeytail](https://github.com/honeycombio/honeytail) to move Atlas data into Honeycomb.
 
+Questions? You can chat with us in the Honeycomb Pollinators Slack. You can find a direct link to request an invite in [Spread the Love: Appreciating Our Pollinators Community](https://www.honeycomb.io/blog/spread-the-love-appreciating-our-pollinators-community/).
+
 ## Installation
 
 ```
