@@ -1,8 +1,10 @@
 # MongoDB Atlas Integration for Honeycomb
 
-[![OSS Lifecycle](https://img.shields.io/osslifecycle/honeycombio/atlas?color=pink)](https://github.com/honeycombio/home/blob/main/honeycomb-oss-lifecycle-and-practices.md)
+[![OSS Lifecycle](https://img.shields.io/osslifecycle/honeycombio/atlas)](https://github.com/honeycombio/home/blob/main/honeycomb-oss-lifecycle-and-practices.md)
 
-**STATUS: this project is being sunset: See https://github.com/honeycombio/atlas/issues/12**
+**STATUS: this project is [archived](https://github.com/honeycombio/home/blob/main/honeycomb-oss-lifecycle-and-practices.md).
+
+We recommend using [honeytail](https://github.com/honeycombio/honeytail) to move Atlas data into Honeycomb.
 
 ## Installation
 
